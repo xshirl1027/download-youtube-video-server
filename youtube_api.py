@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YouTube Video Downloader API for Railway
-A simple Flask API that uses yt-dlp to download videos from YouTube
+YouTube Audio Extractor API
+A simple Flask API that uses yt-dlp to extract audio from YouTube videos
 for transcription purposes.
 """
 
@@ -38,10 +38,13 @@ def extract_video_from_youtube(url, output_path):
     try:
         # Configure yt-dlp options for video download
         ydl_opts = {
-            'format': 'best[height<=720]/best',  # Download best quality up to 720p
-            'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
-            'quiet': True,
-            'no_warnings': True,
+            'format': 'best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best',  # Prefer mp4, max 720p
+            'outtmpl': os.path.join(output_path, '%(title).100s.%(ext)s'),  # Limit title length
+            'quiet': False,  # Enable logging for debugging
+            'no_warnings': False,
+            'extract_flat': False,
+            'writethumbnail': False,
+            'writeinfojson': False,
         }
 
         with YoutubeDL(ydl_opts) as ydl:
@@ -51,27 +54,47 @@ def extract_video_from_youtube(url, output_path):
             # Download video
             ydl.download([url])
             
+            # Debug: List all files in the directory
+            all_files = os.listdir(output_path)
+            print(f"Files in directory after download: {all_files}")
+            
             # Find the downloaded file (common video extensions)
-            title = info.get('title', 'Unknown Title').replace('/', '_').replace('\\', '_')
+            title = info.get('title', 'Unknown Title')
+            # Clean title for filename matching
+            clean_title = title.replace('/', '_').replace('\\', '_').replace(':', '_').replace('?', '_').replace('*', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
             video_file = None
-            video_extensions = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
+            video_extensions = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v']
             
-            # Look for the downloaded video file
-            for file in os.listdir(output_path):
-                if any(file.endswith(ext) for ext in video_extensions) and title.replace(' ', '_') in file.replace(' ', '_'):
-                    video_file = os.path.join(output_path, file)
-                    break
+            # Method 1: Look for files with title in name
+            for file in all_files:
+                if any(file.lower().endswith(ext.lower()) for ext in video_extensions):
+                    # Try partial title matching (more flexible)
+                    title_words = clean_title.lower().split()[:3]  # First 3 words
+                    if any(word in file.lower() for word in title_words if len(word) > 2):
+                        video_file = os.path.join(output_path, file)
+                        print(f"Found video file by title matching: {file}")
+                        break
             
-            # If not found by title matching, get the newest video file
+            # Method 2: If not found by title, get the newest video file
             if not video_file:
-                video_files = [f for f in os.listdir(output_path) if any(f.endswith(ext) for ext in video_extensions)]
+                video_files = [f for f in all_files if any(f.lower().endswith(ext.lower()) for ext in video_extensions)]
+                print(f"Video files found: {video_files}")
                 if video_files:
                     # Get the most recently created file
                     video_files.sort(key=lambda x: os.path.getctime(os.path.join(output_path, x)), reverse=True)
                     video_file = os.path.join(output_path, video_files[0])
+                    print(f"Using newest video file: {video_files[0]}")
+            
+            # Method 3: If still not found, take ANY file that's not a temp file
+            if not video_file:
+                other_files = [f for f in all_files if not f.startswith('.') and not f.endswith('.tmp') and not f.endswith('.part')]
+                if other_files:
+                    video_file = os.path.join(output_path, other_files[0])
+                    print(f"Using first available file: {other_files[0]}")
             
             if not video_file or not os.path.exists(video_file):
-                raise Exception("Video file not found after download")
+                print(f"ERROR: No video file found. Directory contents: {all_files}")
+                raise Exception(f"Video file not found after download. Available files: {all_files}")
                 
             return {
                 'video_file': video_file,
@@ -92,8 +115,7 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'ok',
-        'message': 'YouTube Video Downloader API is running',
-        'version': '1.0.0'
+        'message': 'YouTube Video Downloader API is running'
     })
 
 @app.route('/api/extract-video', methods=['POST'])
@@ -161,7 +183,7 @@ def extract_video():
             raise e
             
     except Exception as e:
-        print(f"Error extracting video: {str(e)}")
+        print(f"Error extracting audio: {str(e)}")
         print(traceback.format_exc())
         return jsonify({
             'success': False,
@@ -254,15 +276,14 @@ def cleanup_old_files():
         pass
 
 if __name__ == '__main__':
-    print("Starting YouTube Video Downloader API on Railway...")
+    print("Starting YouTube Video Downloader API...")
     print("Cleaning up old files...")
     cleanup_old_files()
     
-    # Railway provides PORT environment variable
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 5002))
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
-    print(f"API will be available on port: {port}")
+    print(f"API will be available at: http://localhost:{port}")
     print("Endpoints:")
     print("  GET  /api/health - Health check")
     print("  POST /api/extract-video - Download video from YouTube URL")
@@ -271,5 +292,4 @@ if __name__ == '__main__':
     if debug_mode:
         print("Running in debug mode")
     
-    # Railway requires 0.0.0.0 binding
     app.run(host='0.0.0.0', port=port, debug=debug_mode, use_reloader=False)

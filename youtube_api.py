@@ -36,7 +36,7 @@ def extract_video_from_youtube(url, output_path):
     Returns the path to the downloaded video file and metadata
     """
     try:
-        # Configure yt-dlp options for video download
+        # Configure yt-dlp options for video download with anti-blocking measures
         ydl_opts = {
             'format': 'best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best',  # Prefer mp4, max 720p
             'outtmpl': os.path.join(output_path, '%(title).100s.%(ext)s'),  # Limit title length
@@ -45,6 +45,23 @@ def extract_video_from_youtube(url, output_path):
             'extract_flat': False,
             'writethumbnail': False,
             'writeinfojson': False,
+            # Anti-blocking measures
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'referer': 'https://www.youtube.com/',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip,deflate',
+                'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            },
+            'cookiefile': None,  # Don't use cookies
+            'no_check_certificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'socket_timeout': 120,
         }
 
         with YoutubeDL(ydl_opts) as ydl:
@@ -85,16 +102,46 @@ def extract_video_from_youtube(url, output_path):
                     video_file = os.path.join(output_path, video_files[0])
                     print(f"Using newest video file: {video_files[0]}")
             
-            # Method 3: If still not found, take ANY file that's not a temp file
+            # Method 3: If still not found, check for ANY files but validate they're not web files
             if not video_file:
                 other_files = [f for f in all_files if not f.startswith('.') and not f.endswith('.tmp') and not f.endswith('.part')]
-                if other_files:
+                print(f"Other files found: {other_files}")
+                
+                # Filter out obvious web files
+                non_web_files = []
+                for file in other_files:
+                    file_lower = file.lower()
+                    if not any(file_lower.endswith(ext) for ext in ['.html', '.mhtml', '.xml', '.json', '.txt']):
+                        non_web_files.append(file)
+                
+                if non_web_files:
+                    video_file = os.path.join(output_path, non_web_files[0])
+                    print(f"Using first non-web file: {non_web_files[0]}")
+                elif other_files:
+                    # Check if we got an MHTML file (indicates blocking)
+                    mhtml_files = [f for f in other_files if f.lower().endswith('.mhtml')]
+                    if mhtml_files:
+                        raise Exception(f"YouTube blocked the download - got webpage ({mhtml_files[0]}) instead of video. This may be due to IP blocking or rate limiting. Try again later or use a different video.")
+                    
                     video_file = os.path.join(output_path, other_files[0])
-                    print(f"Using first available file: {other_files[0]}")
+                    print(f"WARNING: Using potentially non-video file: {other_files[0]}")
             
             if not video_file or not os.path.exists(video_file):
                 print(f"ERROR: No video file found. Directory contents: {all_files}")
                 raise Exception(f"Video file not found after download. Available files: {all_files}")
+            
+            # Additional validation: Check file size and content
+            file_size = os.path.getsize(video_file)
+            print(f"Downloaded file size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            
+            if file_size < 1024:  # Less than 1KB is suspicious
+                raise Exception(f"Downloaded file is too small ({file_size} bytes). This likely indicates a download failure or blocking.")
+            
+            # Check if file might be HTML/MHTML by reading first few bytes
+            with open(video_file, 'rb') as f:
+                first_bytes = f.read(100)
+                if b'<html' in first_bytes.lower() or b'mhtml' in first_bytes.lower():
+                    raise Exception("Downloaded file appears to be a webpage, not a video. YouTube may be blocking downloads from this server.")
                 
             return {
                 'video_file': video_file,
